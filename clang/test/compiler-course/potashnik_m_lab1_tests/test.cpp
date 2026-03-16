@@ -75,3 +75,17 @@ void nonconst_reference(int &r2) {
     r2 = 10;  
 }
 
+// CHECK-NOT: int{{\&}} r1 = var1;
+// CHECK: const int{{\&}} r1 = var1;
+void const_reference2() {
+    int var1 = 10;
+    int& r1 = var1;    
+}
+
+// CHECK-NOT: const int{{\&}} r2 = var2;
+// CHECK: int{{\&}} r2 = var2;
+void nonconst_reference2() {
+    int var2 = 10;
+    int& r2 = var2;
+    r2 = 11;    
+}
