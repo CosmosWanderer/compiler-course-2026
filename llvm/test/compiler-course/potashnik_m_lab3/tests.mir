@@ -7,12 +7,14 @@
   target triple = "x86_64-pc-linux-gnu"
 
   define void @foo(i32) { ret void }
-  define void @no_loop_to_unroll() { ret void }
-  define void @simple_unroll() { ret void }
-  define void @full_unroll_5() { ret void }
-  define void @no_unroll_non_divisible() { ret void }
-  define void @no_unroll_trip_exceeds_max() { ret void }
-  define void @bigger_unroll_10() { ret void }
+  define void @test_no_loop() { ret void }
+  define void @test_trip4() { ret void }
+  define void @test_trip5() { ret void }
+  define void @test_trip7() { ret void }
+  define void @test_trip1025() { ret void }
+  define void @test_trip10() { ret void }
+  define void @test_trip20() { ret void }
+  define void @test_complex() { ret void }
 ...
 ---
 name:            foo
@@ -23,10 +25,11 @@ body:            |
     RET 0
 ...
 
-# CHECK-LABEL: name: no_loop_to_unroll
+# Тест 0. Без циклов
+# CHECK-LABEL: name: test_no_loop
 # CHECK: RET 0
 ---
-name:            no_loop_to_unroll
+name:            test_no_loop
 frameInfo:
   adjustsStack:    false
 body:            |
@@ -34,11 +37,12 @@ body:            |
     RET 0
 ...
 
-# CHECK-LABEL: name: simple_unroll
+# 4 iteration loop
+# CHECK-LABEL: name: test_trip4
 # CHECK-COUNT-4: CALL64pcrel32 @foo
 # CHECK: RET 0
 ---
-name:            simple_unroll
+name:            test_trip4
 frameInfo:
   adjustsStack:    true
 body:            |
@@ -60,11 +64,12 @@ body:            |
     RET 0
 ...
 
-# CHECK-LABEL: name: full_unroll_5
+# 5 iteration loop
+# CHECK-LABEL: name: test_trip5
 # CHECK-COUNT-5: CALL64pcrel32 @foo
 # CHECK: RET 0
 ---
-name:            full_unroll_5
+name:            test_trip5
 frameInfo:
   adjustsStack:    true
 body:            |
@@ -86,12 +91,13 @@ body:            |
     RET 0
 ...
 
-# CHECK-LABEL: name: no_unroll_non_divisible
+# 7 iteration loop (no unrolling)
+# CHECK-LABEL: name: test_trip7
 # CHECK:      CALL64pcrel32 @foo
 # CHECK-NOT:  CALL64pcrel32 @foo
 # CHECK:      JMP_1
 ---
-name:            no_unroll_non_divisible
+name:            test_trip7
 frameInfo:
   adjustsStack:    true
 body:            |
@@ -113,12 +119,13 @@ body:            |
     RET 0
 ...
 
-# CHECK-LABEL: name: no_unroll_trip_exceeds_max
+# trip 1025 > 1024 (no unrolling)
+# CHECK-LABEL: name: test_trip1025
 # CHECK:      CALL64pcrel32 @foo
 # CHECK-NOT:  CALL64pcrel32 @foo
 # CHECK:      JMP_1
 ---
-name:            no_unroll_trip_exceeds_max
+name:            test_trip1025
 frameInfo:
   adjustsStack:    true
 body:            |
@@ -140,18 +147,19 @@ body:            |
     RET 0
 ...
 
-# CHECK-LABEL: name: bigger_unroll_10
+# 10 iteration loop
+# CHECK-LABEL: name: test_trip10
 # CHECK-COUNT-5: CALL64pcrel32 @foo
 # CHECK: RET 0
 ---
-name:            bigger_unroll_10
+name:            test_trip10
 frameInfo:
   adjustsStack:    true
 body:            |
   bb.0:
     %0:gr32 = MOV32r0 implicit-def dead $eflags
 
-  bb.1:   ; header/latch/exiting
+  bb.1:
     successors: %bb.2, %bb.1
     ADJCALLSTACKDOWN64 0, 0, 0, implicit-def dead $rsp, implicit-def dead $eflags, implicit-def dead $ssp, implicit $rsp, implicit $ssp
     $edi = COPY %0
@@ -159,6 +167,63 @@ body:            |
     ADJCALLSTACKUP64 0, 0, implicit-def dead $rsp, implicit-def dead $eflags, implicit-def dead $ssp, implicit $rsp, implicit $ssp
     %0:gr32 = ADD32ri8 %0, 1, implicit-def dead $eflags
     CMP32ri %0, 10, implicit-def $eflags
+    JCC_1 %bb.2, 4, implicit killed $eflags
+    JMP_1 %bb.1
+
+  bb.2:
+    RET 0
+...
+
+# 20 iteration loop
+# CHECK-LABEL: name: test_trip20
+# CHECK-COUNT-5: CALL64pcrel32 @foo
+# CHECK: RET 0
+---
+name:            test_trip20
+frameInfo:
+  adjustsStack:    true
+body:            |
+  bb.0:
+    %0:gr32 = MOV32r0 implicit-def dead $eflags
+
+  bb.1:
+    successors: %bb.2, %bb.1
+    ADJCALLSTACKDOWN64 0, 0, 0, implicit-def dead $rsp, implicit-def dead $eflags, implicit-def dead $ssp, implicit $rsp, implicit $ssp
+    $edi = COPY %0
+    CALL64pcrel32 @foo, csr_64, implicit $rsp, implicit $ssp, implicit killed $edi, implicit-def $rsp, implicit-def $ssp
+    ADJCALLSTACKUP64 0, 0, implicit-def dead $rsp, implicit-def dead $eflags, implicit-def dead $ssp, implicit $rsp, implicit $ssp
+    %0:gr32 = ADD32ri8 %0, 1, implicit-def dead $eflags
+    CMP32ri %0, 20, implicit-def $eflags
+    JCC_1 %bb.2, 4, implicit killed $eflags
+    JMP_1 %bb.1
+
+  bb.2:
+    RET 0
+...
+
+# complex body unrolling
+# C++: for (int i = 0; i < 4; i++) { int tmp = i * 2; foo(tmp); }
+# CHECK-LABEL: name: test_complex
+# CHECK-COUNT-4: CALL64pcrel32 @foo
+# CHECK: RET 0
+---
+name:            test_complex
+frameInfo:
+  adjustsStack:    true
+body:            |
+  bb.0:
+    %0:gr32 = MOV32r0 implicit-def dead $eflags
+
+  bb.1:
+    successors: %bb.2, %bb.1
+    %1:gr32 = COPY %0
+    %1:gr32 = IMUL32rri8 %1, 2, implicit-def dead $eflags
+    ADJCALLSTACKDOWN64 0, 0, 0, implicit-def dead $rsp, implicit-def dead $eflags, implicit-def dead $ssp, implicit $rsp, implicit $ssp
+    $edi = COPY %1
+    CALL64pcrel32 @foo, csr_64, implicit $rsp, implicit $ssp, implicit killed $edi, implicit-def $rsp, implicit-def $ssp
+    ADJCALLSTACKUP64 0, 0, implicit-def dead $rsp, implicit-def dead $eflags, implicit-def dead $ssp, implicit $rsp, implicit $ssp
+    %0:gr32 = ADD32ri8 %0, 1, implicit-def dead $eflags
+    CMP32ri %0, 4, implicit-def $eflags
     JCC_1 %bb.2, 4, implicit killed $eflags
     JMP_1 %bb.1
 
