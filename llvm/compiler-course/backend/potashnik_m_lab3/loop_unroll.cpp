@@ -11,10 +11,10 @@ using namespace llvm;
 
 namespace {
 
-static constexpr int max_unroll_factor = 5;
-static constexpr int max_trip_count = 1024;
-
 class PotashnikUnroller {
+  static constexpr int max_factor = 5;
+  static constexpr int max_trip = 1024;
+
 public:
   const X86InstrInfo *TII = nullptr;
 
@@ -26,57 +26,66 @@ public:
 
   bool try_unroll_loop(MachineLoop *L, MachineFunction &MF,
                        MachineLoopInfo &MLI) {
-    MachineBasicBlock *latch = L->getLoopLatch();
-    MachineBasicBlock *exiting = get_unique_exiting_block(L);
+    MachineBasicBlock *loop_latch = L->getLoopLatch();
+    MachineBasicBlock *exiting_block = get_unique_exiting_block(L);
 
-    if (!only_one_preheader(L) || !latch || !exiting || exiting != latch)
+    if (!only_one_preheader(L))
+      return false;
+    if (!loop_latch || !exiting_block)
+      return false;
+    if (exiting_block != loop_latch)
       return false;
 
-    bool has_nested_loops = (L->begin() != L->end());
-    if (has_nested_loops)
+    if (L->begin() != L->end())
       return false;
 
-    int trip_count = get_trip_count(latch);
-    if (trip_count <= 1 || trip_count > max_trip_count)
+    int trip_count = get_trip_count(loop_latch);
+    if (trip_count <= 1 || trip_count > max_trip)
       return false;
 
-    int factor = choose_unroll_factor(trip_count, max_unroll_factor);
-    if (factor <= 1)
+    int unroll_factor = choose_unroll_factor(trip_count, max_factor);
+    if (unroll_factor <= 1)
       return false;
 
     SmallVector<MachineInstr *, 16> loop_body = collect_loop_body(L, MLI);
     if (loop_body.empty())
       return false;
 
-    MachineBasicBlock::iterator induction_add = latch->end();
-    for (auto MI = latch->begin(), ME = latch->end(); MI != ME; ++MI) {
-      if (MI->getOpcode() == X86::ADD32ri8) {
-        induction_add = MI;
-        break;
-      }
-    }
-    if (induction_add == latch->end())
+    MachineBasicBlock::iterator induction_instr =
+        find_induction_add(loop_latch);
+    if (induction_instr == loop_latch->end())
       return false;
 
-    for (int i = 0; i < factor - 1; ++i) {
+    // Вставка копий тела перед индукционной инструкцией
+    int copies_left = unroll_factor - 1;
+    while (copies_left--) {
       for (MachineInstr *MI : loop_body) {
         MachineInstr *cloned = MF.CloneMachineInstr(MI);
-        latch->insert(induction_add, cloned);
+        loop_latch->insert(induction_instr, cloned);
       }
     }
     return true;
   }
 
 private:
+  MachineBasicBlock::iterator find_induction_add(MachineBasicBlock *MBB) const {
+    for (auto MI = MBB->begin(), ME = MBB->end(); MI != ME; ++MI)
+      if (MI->getOpcode() == X86::ADD32ri8)
+        return MI;
+    return MBB->end();
+  }
+
   MachineBasicBlock *get_unique_exiting_block(MachineLoop *L) const {
     MachineBasicBlock *exiting = nullptr;
     for (MachineBasicBlock *MBB : L->blocks()) {
-      bool external_successor =
-          llvm::any_of(MBB->successors(), [&](MachineBasicBlock *succ) {
-            return !L->contains(succ);
-          });
-
-      if (!external_successor)
+      bool has_outside_succ = false;
+      for (MachineBasicBlock *succ : MBB->successors()) {
+        if (!L->contains(succ)) {
+          has_outside_succ = true;
+          break;
+        }
+      }
+      if (!has_outside_succ)
         continue;
       if (exiting)
         return nullptr;
@@ -112,30 +121,29 @@ private:
     return -1;
   }
 
-  int choose_unroll_factor(int trip_count, int max_factor) const {
-    for (int F = std::min(max_factor, trip_count); F > 1; --F) {
-      if (trip_count % F == 0)
-        return F;
+  int choose_unroll_factor(int trip, int max_factor_arg) const {
+    int start_f = (max_factor_arg < trip) ? max_factor_arg : trip;
+    for (int f = start_f; f > 1; --f) {
+      if (trip % f == 0)
+        return f;
     }
     return 1;
   }
 
   SmallVector<MachineInstr *, 16>
   collect_loop_body(MachineLoop *L, MachineLoopInfo &MLI) const {
-    SmallVector<MachineInstr *, 16> loop_body;
+    SmallVector<MachineInstr *, 16> body;
     for (MachineBasicBlock *MBB : L->blocks()) {
       if (MLI.getLoopFor(MBB) != L)
         continue;
       for (MachineInstr &MI : *MBB) {
-        if (MI.isBranch() || MI.isTerminator() || MI.isDebugInstr())
+        if (MI.isBranch() || MI.isTerminator() || MI.isDebugInstr() ||
+            MI.getOpcode() == X86::CMP32ri8 || MI.getOpcode() == X86::CMP32ri)
           continue;
-        unsigned opc = MI.getOpcode();
-        if (opc == X86::CMP32ri8 || opc == X86::CMP32ri)
-          continue;
-        loop_body.push_back(&MI);
+        body.push_back(&MI);
       }
     }
-    return loop_body;
+    return body;
   }
 
   Register get_induction_reg(MachineBasicBlock *latch) const {
