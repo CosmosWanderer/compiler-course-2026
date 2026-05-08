@@ -1,4 +1,4 @@
-// RUN: mlir-opt -load-pass-plugin=%mlir_lib_dir/potashnik_m_lab4%shlibext --pass-pipeline="builtin.module(trip-count)" %s | FileCheck %s
+// RUN: mlir-opt -load-pass-plugin=%mlir_lib_dir/potashnik_m_lab4_MLIR%shlibext --pass-pipeline="builtin.module(trip-count)" %s | FileCheck %s
 
 func.func @test_all_loops(%arg0: index, %arg1: index) {
   // simple loop
